@@ -1,5 +1,5 @@
 // Aave V3 - реальная интеграция через TheGraph
-const AAVE_SUBGRAPH = 'https://gateway-arbitrum.network.thegraph.com/api/subgraphs/id/8wR23i1c8zZB4gQ1gJNzpR8PyWP9SReLuePA5ZwnfZ4z';
+const AAVE_SUBGRAPH = 'https://api.thegraph.com/subgraphs/name/aave/protocol-v3-arbitrum';
 
 function json(statusCode, body) {
   return {
