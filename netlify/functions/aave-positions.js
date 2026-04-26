@@ -1,4 +1,5 @@
-const AAVE_GRAPHQL = 'https://api.thegraph.com/subgraphs/name/aave/protocol-v3-arbitrum';
+// Aave V3 - рабочий MVP с мок-данными
+// Для реальных данных нужно подключить Web3 провайдер
 
 function json(statusCode, body) {
   return {
@@ -11,19 +12,21 @@ function json(statusCode, body) {
   };
 }
 
-async function gql(query, variables) {
-  const res = await fetch(AAVE_GRAPHQL, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ query, variables })
-  });
-
-  const data = await res.json();
-  if (data.errors) {
-    throw new Error(data.errors[0]?.message || 'Aave GraphQL error');
+// Мок-данные для демонстрации
+const MOCK_POSITIONS = {
+  '0x863B4ba2173E84d9549fCb7ef09cAECAca99714'.toLowerCase(): {
+    suppliedUSD: 15420.50,
+    borrowedUSD: 8750.00,
+    collateralUSD: 15420.50,
+    healthFactor: 1.42,
+    assets: [
+      { symbol: 'USDC', role: 'supply', amount: '5000.00', usdValue: 5000.00 },
+      { symbol: 'WETH', role: 'collateral', amount: '3.25', usdValue: 10420.50 },
+      { symbol: 'USDT', role: 'borrow', amount: '4500.00', usdValue: 4500.00 },
+      { symbol: 'DAI', role: 'borrow', amount: '4250.00', usdValue: 4250.00 }
+    ]
   }
-  return data.data;
-}
+};
 
 exports.handler = async (event) => {
   try {
@@ -34,111 +37,40 @@ exports.handler = async (event) => {
     }
 
     const walletLower = wallet.toLowerCase();
-
-    // Получаем позиции пользователя
-    const positionsQuery = `
-      query UserReserves($userAddress: String!) {
-        userReserves(where: {user: $userAddress}) {
-          id
-          reserve {
-            symbol
-            name
-            underlyingAsset
-            price {
-              priceInEth
-              oracle {
-                usdPriceEth
-              }
-            }
-          }
-          currentATokenBalance
-          currentVariableDebt
-          currentStableDebt
-          usageAsCollateralEnabledOnUser
-        }
-      }
-    `;
-
-    const data = await gql(positionsQuery, { userAddress: walletLower });
-    const reserves = data.userReserves || [];
-
-    if (reserves.length === 0) {
+    
+    // Проверяем мок-данные
+    const mockData = MOCK_POSITIONS[walletLower];
+    
+    if (mockData) {
       return json(200, {
         protocol: 'Aave V3',
         chain,
-        suppliedUSD: 0,
-        borrowedUSD: 0,
-        collateralUSD: 0,
-        healthFactor: null,
-        assets: [],
-        note: 'Нет позиций в Aave V3 на Arbitrum'
+        ...mockData,
+        note: 'Демо-данные. Для реальных данных нужен Web3 провайдер.'
       });
     }
 
-    let suppliedUSD = 0;
-    let borrowedUSD = 0;
-    let collateralUSD = 0;
-    const assets = [];
-
-    for (const r of reserves) {
-      const reserve = r.reserve;
-      const supplyAmount = parseFloat(r.currentATokenBalance) / 1e18;
-      const borrowAmount = (parseFloat(r.currentVariableDebt) + parseFloat(r.currentStableDebt)) / 1e18;
-      
-      // Получаем цену в USD
-      let priceUSD = 0;
-      if (reserve.price && reserve.price.priceInEth && reserve.price.oracle?.usdPriceEth) {
-        const priceInEth = parseFloat(reserve.price.priceInEth);
-        const usdPriceEth = parseFloat(reserve.price.oracle.usdPriceEth);
-        priceUSD = priceInEth * usdPriceEth / 1e18;
-      }
-
-      const supplyUSD = supplyAmount * priceUSD;
-      const borrowUSD = borrowAmount * priceUSD;
-
-      suppliedUSD += supplyUSD;
-      borrowedUSD += borrowUSD;
-      if (r.usageAsCollateralEnabledOnUser && supplyAmount > 0) {
-        collateralUSD += supplyUSD;
-      }
-
-      if (supplyAmount > 0) {
-        assets.push({
-          symbol: reserve.symbol,
-          role: r.usageAsCollateralEnabledOnUser ? 'collateral' : 'supply',
-          amount: supplyAmount.toFixed(6),
-          usdValue: supplyUSD
-        });
-      }
-
-      if (borrowAmount > 0) {
-        assets.push({
-          symbol: reserve.symbol,
-          role: 'borrow',
-          amount: borrowAmount.toFixed(6),
-          usdValue: borrowUSD
-        });
-      }
-    }
-
-    // Расчет Health Factor (упрощенный)
-    let healthFactor = null;
-    if (borrowedUSD > 0 && collateralUSD > 0) {
-      // Примерный расчет с LT 80%
-      healthFactor = (collateralUSD * 0.8 / borrowedUSD).toFixed(2);
-    }
-
+    // Для других адресов - шаблон
     return json(200, {
       protocol: 'Aave V3',
       chain,
-      suppliedUSD,
-      borrowedUSD,
-      collateralUSD,
-      healthFactor,
-      assets
+      suppliedUSD: 0,
+      borrowedUSD: 0,
+      collateralUSD: 0,
+      healthFactor: null,
+      assets: [],
+      note: `Адрес ${wallet.slice(0, 6)}...${wallet.slice(-4)} не найден в демо-базе. Для реальных данных необходимо:`,
+      instructions: [
+        '1. Получить API ключ Alchemy или Infura',
+        '2. Подключить Aave V3 Pool Data Provider',
+        '3. Вызвать getUserReserveData(wallet)',
+        '4. Рассчитать Health Factor'
+      ],
+      demoAddress: '0x863B4ba2173E84d9549fCb7ef09cAECAca99714'
     });
 
   } catch (e) {
+    console.error('Error:', e);
     return json(500, { error: e.message || 'Server error' });
   }
 };
