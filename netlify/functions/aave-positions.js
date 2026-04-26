@@ -46,10 +46,12 @@ async function fetchDeBank(endpoint) {
 }
 
 exports.handler = async function(event, context) {
+  let wallet, chain;
+  
   try {
     const body = JSON.parse(event.body || '{}');
-    const wallet = body.wallet;
-    const chain = body.chain || 'arbitrum';
+    wallet = body.wallet;
+    chain = body.chain || 'arbitrum';
 
     if (!wallet || !wallet.startsWith('0x')) {
       return json(400, { error: 'Нужен EVM-адрес 0x...' });
@@ -145,7 +147,7 @@ exports.handler = async function(event, context) {
     console.error('Error:', e);
     
     // Fallback к кэшу
-    const walletLower = body.wallet.toLowerCase();
+    const walletLower = (wallet || '').toLowerCase();
     const cached = USER_CACHE[walletLower];
     
     if (cached) {
