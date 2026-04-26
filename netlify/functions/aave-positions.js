@@ -1,178 +1,144 @@
-const AAVE_GRAPHQL = 'https://api.v3.aave.com/graphql';
-const CHAIN_ID_MAP = { ethereum: 1, arbitrum: 42161, base: 8453 };
+const AAVE_GRAPHQL = 'https://api.thegraph.com/subgraphs/name/aave/protocol-v3-arbitrum';
 
 function json(statusCode, body) {
- return {
- statusCode,
- headers: {
- 'content-type': 'application/json',
- 'access-control-allow-origin': '*'
- },
- body: JSON.stringify(body)
- };
+  return {
+    statusCode,
+    headers: {
+      'content-type': 'application/json',
+      'access-control-allow-origin': '*'
+    },
+    body: JSON.stringify(body)
+  };
 }
 
 async function gql(query, variables) {
- const res = await fetch(AAVE_GRAPHQL, {
- method: 'POST',
- headers: { 'content-type': 'application/json' },
- body: JSON.stringify({ query, variables })
- });
+  const res = await fetch(AAVE_GRAPHQL, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ query, variables })
+  });
 
- const data = await res.json();
- if (data.errors) {
- throw new Error(data.errors[0]?.message || 'Aave GraphQL error');
- }
- return data.data;
+  const data = await res.json();
+  if (data.errors) {
+    throw new Error(data.errors[0]?.message || 'Aave GraphQL error');
+  }
+  return data.data;
 }
 
 exports.handler = async (event) => {
- try {
- const { wallet, chain = 'arbitrum' } = JSON.parse(event.body || '{}');
+  try {
+    const { wallet, chain = 'arbitrum' } = JSON.parse(event.body || '{}');
 
- if (!wallet || !wallet.startsWith('0x')) {
- return json(400, { error: 'Нужен EVM-адрес 0x...' });
- }
+    if (!wallet || !wallet.startsWith('0x')) {
+      return json(400, { error: 'Нужен EVM-адрес 0x...' });
+    }
 
- const chainId = CHAIN_ID_MAP[chain];
- if (!chainId) {
- return json(400, { error: 'Aave adapter поддерживает ethereum, arbitrum, base' });
- }
+    const walletLower = wallet.toLowerCase();
 
- const marketsQuery = `
- query Markets($request: MarketsRequest!) {
- markets(request: $request) {
- address
- name
- chain { chainId name }
- }
- }
- `;
+    // Получаем позиции пользователя
+    const positionsQuery = `
+      query UserReserves($userAddress: String!) {
+        userReserves(where: {user: $userAddress}) {
+          id
+          reserve {
+            symbol
+            name
+            underlyingAsset
+            price {
+              priceInEth
+              oracle {
+                usdPriceEth
+              }
+            }
+          }
+          currentATokenBalance
+          currentVariableDebt
+          currentStableDebt
+          usageAsCollateralEnabledOnUser
+        }
+      }
+    `;
 
- const marketsData = await gql(marketsQuery, {
- request: { chainIds: [chainId], user: wallet }
- });
+    const data = await gql(positionsQuery, { userAddress: walletLower });
+    const reserves = data.userReserves || [];
 
- const markets = (marketsData.markets || []).filter(
- m => m.chain?.chainId === chainId
- );
+    if (reserves.length === 0) {
+      return json(200, {
+        protocol: 'Aave V3',
+        chain,
+        suppliedUSD: 0,
+        borrowedUSD: 0,
+        collateralUSD: 0,
+        healthFactor: null,
+        assets: [],
+        note: 'Нет позиций в Aave V3 на Arbitrum'
+      });
+    }
 
- if (!markets.length) {
- return json(200, {
- protocol: 'Aave V3',
- chain,
- suppliedUSD: 0,
- borrowedUSD: 0,
- collateralUSD: 0,
- healthFactor: null,
- assets: [],
- note: 'Market не найден'
- });
- }
+    let suppliedUSD = 0;
+    let borrowedUSD = 0;
+    let collateralUSD = 0;
+    const assets = [];
 
- const market = markets[0];
+    for (const r of reserves) {
+      const reserve = r.reserve;
+      const supplyAmount = parseFloat(r.currentATokenBalance) / 1e18;
+      const borrowAmount = (parseFloat(r.currentVariableDebt) + parseFloat(r.currentStableDebt)) / 1e18;
+      
+      // Получаем цену в USD
+      let priceUSD = 0;
+      if (reserve.price && reserve.price.priceInEth && reserve.price.oracle?.usdPriceEth) {
+        const priceInEth = parseFloat(reserve.price.priceInEth);
+        const usdPriceEth = parseFloat(reserve.price.oracle.usdPriceEth);
+        priceUSD = priceInEth * usdPriceEth / 1e18;
+      }
 
- const stateQuery = `
- query UserMarketState($request: UserMarketStateRequest!) {
- userMarketState(request: $request) {
- borrowableUsd
- collateralUsd
- debtUsd
- netWorthUsd
- availableBorrowsUsd
- healthFactor
- }
- }
- `;
+      const supplyUSD = supplyAmount * priceUSD;
+      const borrowUSD = borrowAmount * priceUSD;
 
- const suppliesQuery = `
- query UserSupplies($request: UserSuppliesRequest!) {
- userSupplies(request: $request) {
- amount { value }
- reserve {
- underlyingToken { symbol }
- price { usd }
- }
- isCollateral
- }
- }
- `;
+      suppliedUSD += supplyUSD;
+      borrowedUSD += borrowUSD;
+      if (r.usageAsCollateralEnabledOnUser && supplyAmount > 0) {
+        collateralUSD += supplyUSD;
+      }
 
- const borrowsQuery = `
- query UserBorrows($request: UserBorrowsRequest!) {
- userBorrows(request: $request) {
- amount { value }
- reserve {
- underlyingToken { symbol }
- price { usd }
- }
- }
- }
- `;
+      if (supplyAmount > 0) {
+        assets.push({
+          symbol: reserve.symbol,
+          role: r.usageAsCollateralEnabledOnUser ? 'collateral' : 'supply',
+          amount: supplyAmount.toFixed(6),
+          usdValue: supplyUSD
+        });
+      }
 
- const orderBy = { date: 'DESC' };
+      if (borrowAmount > 0) {
+        assets.push({
+          symbol: reserve.symbol,
+          role: 'borrow',
+          amount: borrowAmount.toFixed(6),
+          usdValue: borrowUSD
+        });
+      }
+    }
 
- const [stateData, suppliesData, borrowsData] = await Promise.all([
- gql(stateQuery, {
- request: { market: market.address, user: wallet, chainId }
- }),
- gql(suppliesQuery, {
- request: {
- markets: [market.address],
- user: wallet,
- collateralsOnly: false,
- orderBy
- }
- }).catch(() => ({ userSupplies: [] })),
- gql(borrowsQuery, {
- request: {
- markets: [market.address],
- user: wallet,
- orderBy
- }
- }).catch(() => ({ userBorrows: [] }))
- ]);
+    // Расчет Health Factor (упрощенный)
+    let healthFactor = null;
+    if (borrowedUSD > 0 && collateralUSD > 0) {
+      // Примерный расчет с LT 80%
+      healthFactor = (collateralUSD * 0.8 / borrowedUSD).toFixed(2);
+    }
 
- const state = stateData.userMarketState || {};
+    return json(200, {
+      protocol: 'Aave V3',
+      chain,
+      suppliedUSD,
+      borrowedUSD,
+      collateralUSD,
+      healthFactor,
+      assets
+    });
 
- const supplyAssets = (suppliesData.userSupplies || []).map(x => ({
- symbol: x.reserve?.underlyingToken?.symbol || '?',
- role: x.isCollateral ? 'collateral' : 'supply',
- amount: x.amount?.value || null,
- usdValue:
- x.reserve?.price?.usd && x.amount?.value
- ? Number(x.reserve.price.usd) * Number(x.amount.value)
- : null
- }));
-
- const borrowAssets = (borrowsData.userBorrows || []).map(x => ({
- symbol: x.reserve?.underlyingToken?.symbol || '?',
- role: 'borrow',
- amount: x.amount?.value || null,
- usdValue:
- x.reserve?.price?.usd && x.amount?.value
- ? Number(x.reserve.price.usd) * Number(x.amount.value)
- : null
- }));
-
- return json(200, {
- protocol: 'Aave V3',
- chain,
- market: {
- address: market.address,
- name: market.name,
- chainId
- },
- suppliedUSD: Number(state.collateralUsd || 0),
- borrowedUSD: Number(state.debtUsd || 0),
- collateralUSD: Number(state.collateralUsd || 0),
- healthFactor: state.healthFactor ?? null,
- borrowableUSD: Number(state.borrowableUsd || 0),
- netWorthUSD: Number(state.netWorthUsd || 0),
- assets: [...supplyAssets, ...borrowAssets]
- });
-
- } catch (e) {
- return json(500, { error: e.message || 'Server error' });
- }
+  } catch (e) {
+    return json(500, { error: e.message || 'Server error' });
+  }
 };
