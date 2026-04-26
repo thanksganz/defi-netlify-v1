@@ -1,8 +1,6 @@
 {
-  "name": "defi-netlify-v1",
-  "version": "1.0.0",
-  "description": "DeFi Portfolio Tracker",
-  "scripts": {
-    "dev": "netlify dev"
-  }
+ "name": "defi-activity-monitor-netlify",
+ "version": "1.0.0",
+ "private": true,
+ "type": "commonjs"
 }

@@ -1,8 +1,18 @@
 [build]
-  publish = "public"
-  functions = "netlify/functions"
+ publish = "public"
+ functions = "netlify/functions"
 
 [[redirects]]
-  from = "/api/*"
-  to = "/.netlify/functions/:splat"
-  status = 200
+ from = "/api/aave/positions"
+ to = "/.netlify/functions/aave-positions"
+ status = 200
+
+[[redirects]]
+ from = "/api/navi/positions"
+ to = "/.netlify/functions/navi-positions"
+ status = 200
+
+[[redirects]]
+ from = "/api/nostra/positions"
+ to = "/.netlify/functions/nostra-positions"
+ status = 200

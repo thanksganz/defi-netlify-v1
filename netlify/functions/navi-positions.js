@@ -1,18 +1,29 @@
-exports.handler = async (event) => {
-  const { address } = event.queryStringParameters || {};
-  
-  if (!address) {
-    return {
-      statusCode: 400,
-      body: JSON.stringify({ error: 'Address required' })
-    };
-  }
+function json(statusCode, body) {
+ return {
+ statusCode,
+ headers: {
+ 'content-type': 'application/json',
+ 'access-control-allow-origin': '*'
+ },
+ body: JSON.stringify(body)
+ };
+}
 
-  return {
-    statusCode: 200,
-    headers: {
-      'Access-Control-Allow-Origin': '*'
-    },
-    body: JSON.stringify({ protocol: 'Navi', address, positions: [] })
-  };
+exports.handler = async (event) => {
+ const { wallet } = JSON.parse(event.body || '{}');
+
+ if (!wallet) {
+ return json(400, { error: 'Нужен Sui-адрес' });
+ }
+
+ return json(200, {
+ protocol: 'NAVI Lending',
+ chain: 'sui',
+ suppliedUSD: null,
+ borrowedUSD: null,
+ collateralUSD: null,
+ healthFactor: null,
+ assets: [],
+ note: 'Каркас адаптера готов. Следующий шаг — подключить NAVI SDK.'
+ });
 };
