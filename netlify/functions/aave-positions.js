@@ -1,5 +1,52 @@
-// Aave V3 - реальная интеграция через TheGraph
-const AAVE_SUBGRAPH = 'https://api.thegraph.com/subgraphs/name/aave/protocol-v3-arbitrum';
+// Aave V3 - реальная интеграция через Alchemy
+const ALCHEMY_URL = 'https://arb-mainnet.g.alchemy.com/v2/ksyAQZ9F6Th6bIhUspYkKn-CeIUqyXcu';
+
+// Aave V3 Pool Data Provider на Arbitrum
+const AAVE_POOL_DATA_PROVIDER = '0x69FA688f1Dc47d4B5d8029D5a35FB7a548310654';
+
+// ABI для Pool Data Provider
+const ABI = [
+  {
+    "inputs": [{"internalType": "address", "name": "user", "type": "address"}],
+    "name": "getUserReservesData",
+    "outputs": [
+      {
+        "components": [
+          {"internalType": "address", "name": "underlyingAsset", "type": "address"},
+          {"internalType": "uint256", "name": "scaledATokenBalance", "type": "uint256"},
+          {"internalType": "uint256", "name": "usageAsCollateralEnabledOnUser", "type": "bool"},
+          {"internalType": "uint256", "name": "scaledVariableDebt", "type": "uint256"},
+          {"internalType": "uint256", "name": "principalStableDebt", "type": "uint256"},
+          {"internalType": "uint256", "name": "currentATokenBalance", "type": "uint256"},
+          {"internalType": "uint256", "name": "currentVariableDebt", "type": "uint256"},
+          {"internalType": "uint256", "name": "currentStableDebt", "type": "uint256"},
+          {"internalType": "uint256", "name": "currentLiquidationThreshold", "type": "uint256"},
+          {"internalType": "uint256", "name": "ltv", "type": "uint256"},
+          {"internalType": "uint256", "name": "healthFactor", "type": "uint256"}
+        ],
+        "internalType": "struct IPoolDataProvider.UserReserveData[]",
+        "name": "",
+        "type": "tuple[]"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  }
+];
+
+// Токены и их символы
+const TOKEN_SYMBOLS = {
+  '0x912CE59144191C1204E64559FE8253a0e49E6548': 'ARB',
+  '0x82aF49447D8a07e3bd95BD0d56f35241523fBab1': 'WETH',
+  '0xaf88d065e77c8cC2239327C5EDb3A432268e5831': 'USDC',
+  '0xFd086bC7CD5C481DCC9C85ebE478A1C0b69FCbb9': 'USDT',
+  '0xDA10009cBd5D07dd0CeCc66161FC93D7c9000da1': 'DAI',
+  '0xba5DdD1f9d7F570d94A5142F6b52C044d5B0F58c': 'USDT0'
+};
+
+const TOKEN_DECIMALS = {
+  'ARB': 18, 'WETH': 18, 'USDC': 6, 'USDT': 6, 'DAI': 18, 'USDT0': 6
+};
 
 function json(statusCode, body) {
   return {
@@ -12,22 +59,23 @@ function json(statusCode, body) {
   };
 }
 
-async function fetchSubgraph(query, variables) {
-  const response = await fetch(AAVE_SUBGRAPH, {
+async function callAlchemy(method, params) {
+  const response = await fetch(ALCHEMY_URL, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ query, variables })
+    body: JSON.stringify({
+      jsonrpc: '2.0',
+      id: 1,
+      method: method,
+      params: params
+    })
   });
   
-  if (!response.ok) {
-    throw new Error(`Subgraph error: ${response.status}`);
-  }
-  
   const data = await response.json();
-  if (data.errors) {
-    throw new Error(data.errors[0]?.message || 'GraphQL error');
+  if (data.error) {
+    throw new Error(data.error.message);
   }
-  return data.data;
+  return data.result;
 }
 
 exports.handler = async function(event, context) {
@@ -40,149 +88,49 @@ exports.handler = async function(event, context) {
       return json(400, { error: 'Нужен EVM-адрес 0x...' });
     }
 
-    var walletLower = wallet.toLowerCase();
+    // Вызываем getUserReservesData через eth_call
+    const callData = {
+      to: AAVE_POOL_DATA_PROVIDER,
+      data: '0xbf92857c' + wallet.toLowerCase().slice(2).padStart(64, '0')
+    };
 
-    // Запрос позиций пользователя
-    const query = `
-      query UserReserves($userAddress: String!) {
-        userReserves(where: {user: $userAddress}) {
-          id
-          reserve {
-            symbol
-            name
-            decimals
-            underlyingAsset
-            price {
-              priceInEth
-            }
-            baseLTVasCollateral
-          }
-          currentATokenBalance
-          currentVariableDebt
-          currentStableDebt
-          usageAsCollateralEnabledOnUser
-        }
-        userTransactions(where: {user: $userAddress}, orderBy: timestamp, orderDirection: desc, first: 1) {
-          id
-        }
-      }
-    `;
-
-    const data = await fetchSubgraph(query, { userAddress: walletLower });
+    // Получаем резервы пользователя
+    const result = await callAlchemy('eth_call', [callData, 'latest']);
     
-    if (!data || !data.userReserves || data.userReserves.length === 0) {
+    if (!result || result === '0x') {
       return json(200, {
         protocol: 'Aave V3',
         chain: chain,
         netWorth: 0,
         suppliedUSD: 0,
         borrowedUSD: 0,
-        collateralUSD: 0,
         healthFactor: null,
         assets: [],
         borrows: [],
-        note: 'Нет активных позиций в Aave V3 на Arbitrum'
+        note: 'Нет позиций в Aave V3 на Arbitrum'
       });
     }
 
-    let suppliedUSD = 0;
-    let borrowedUSD = 0;
-    let collateralUSD = 0;
-    const assets = [];
-    const borrows = [];
-
-    // ETH price in USD (примерно, для расчетов)
-    const ethPriceUSD = 3500;
-
-    for (const r of data.userReserves) {
-      const reserve = r.reserve;
-      const decimals = parseInt(reserve.decimals || '18');
-      
-      // Supply
-      const supplyRaw = r.currentATokenBalance;
-      const supplyAmount = supplyRaw / Math.pow(10, decimals);
-      
-      // Borrow (variable + stable)
-      const borrowVariable = r.currentVariableDebt / Math.pow(10, decimals);
-      const borrowStable = r.currentStableDebt / Math.pow(10, decimals);
-      const borrowAmount = borrowVariable + borrowStable;
-      
-      // Price calculation
-      let priceUSD = 0;
-      if (reserve.price && reserve.price.priceInEth) {
-        const priceInEth = parseFloat(reserve.price.priceInEth) / Math.pow(10, 18);
-        priceUSD = priceInEth * ethPriceUSD;
-      }
-      
-      // Fallback prices for common tokens
-      if (priceUSD === 0) {
-        const fallbackPrices = {
-          'USDC': 1, 'USDT': 1, 'DAI': 1, 'USD₮0': 1,
-          'WETH': 3500, 'ETH': 3500,
-          'WBTC': 65000, 'BTC': 65000,
-          'ARB': 0.13, 'LINK': 15, 'UNI': 7
-        };
-        priceUSD = fallbackPrices[reserve.symbol] || 0;
-      }
-
-      const supplyValue = supplyAmount * priceUSD;
-      const borrowValue = borrowAmount * priceUSD;
-
-      suppliedUSD += supplyValue;
-      borrowedUSD += borrowValue;
-      
-      if (r.usageAsCollateralEnabledOnUser && supplyAmount > 0) {
-        const ltv = parseFloat(reserve.baseLTVasCollateral || '0') / 10000;
-        collateralUSD += supplyValue * ltv;
-      }
-
-      if (supplyAmount > 0.0001) {
-        assets.push({
-          symbol: reserve.symbol,
-          role: r.usageAsCollateralEnabledOnUser ? 'collateral' : 'supply',
-          amount: supplyAmount.toFixed(4),
-          usdValue: supplyValue
-        });
-      }
-
-      if (borrowAmount > 0.0001) {
-        borrows.push({
-          symbol: reserve.symbol,
-          amount: borrowAmount.toFixed(4),
-          usdValue: borrowValue
-        });
-      }
-    }
-
-    // Calculate Health Factor
-    let healthFactor = null;
-    if (borrowedUSD > 0 && collateralUSD > 0) {
-      healthFactor = (collateralUSD / borrowedUSD).toFixed(2);
-    } else if (borrowedUSD === 0 && suppliedUSD > 0) {
-      healthFactor = '∞';
-    }
-
-    const netWorth = suppliedUSD - borrowedUSD;
-
+    // Декодируем результат (упрощенно)
+    // В реальности здесь нужен полный ABI decoder
     return json(200, {
       protocol: 'Aave V3',
       chain: chain,
-      netWorth: netWorth,
-      suppliedUSD: suppliedUSD,
-      borrowedUSD: borrowedUSD,
-      collateralUSD: collateralUSD,
-      healthFactor: healthFactor,
-      assets: assets,
-      borrows: borrows,
-      rawData: data.userReserves.length,
-      note: 'Реальные данные из Aave V3 subgraph'
+      wallet: wallet,
+      rawData: result.slice(0, 100) + '...',
+      note: 'Alchemy подключен. Требуется полная реализация декодирования данных.',
+      nextSteps: [
+        'Добавить полный ABI decoder',
+        'Получить цены токенов',
+        'Рассчитать USD значения'
+      ]
     });
 
   } catch (e) {
     console.error('Error:', e);
     return json(500, { 
       error: e.message || 'Server error',
-      details: 'Проверьте адрес или попробуйте позже'
+      details: 'Ошибка при запросе к Alchemy'
     });
   }
 };
