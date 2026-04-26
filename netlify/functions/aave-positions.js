@@ -1,8 +1,8 @@
 // Aave V3 - реальная интеграция через Alchemy + Aave UI Data Provider
 const ALCHEMY_URL = 'https://arb-mainnet.g.alchemy.com/v2/ksyAQZ9F6Th6bIhUspYkKn-CeIUqyXcu';
 
-// Aave V3 UI Pool Data Provider на Arbitrum - даёт готовые данные
-const AAVE_UI_DATA_PROVIDER = '0xC9B8b0c596713B03dA5C737d0f19b4Eb72b7654A';
+// Aave V3 Pool Data Provider на Arbitrum
+const AAVE_POOL_DATA_PROVIDER = '0x69FA688f1Dc47d4B5d8029D5a35FB7a548310654';
 
 function json(statusCode, body) {
   return {
@@ -51,19 +51,11 @@ exports.handler = async function(event, context) {
       return json(400, { error: 'Нужен EVM-адрес 0x...' });
     }
 
-    // Получаем данные через getReservesData - возвращает список всех резервов с ценами
-    const reservesCall = {
-      to: AAVE_UI_DATA_PROVIDER,
-      data: '0xd5b75857' + '0000000000000000000000000000000000000000000000000000000000000000'
-    };
-
-    const reservesResult = await callAlchemy('eth_call', [reservesCall, 'latest']);
-    
     // Получаем пользовательские данные через getUserReservesData
     // Функция: getUserReservesData(address user)
     // Селектор: 0xbf92857c
     const userDataCall = {
-      to: AAVE_UI_DATA_PROVIDER,
+      to: AAVE_POOL_DATA_PROVIDER,
       data: '0xbf92857c' + wallet.toLowerCase().slice(2).padStart(64, '0')
     };
 
