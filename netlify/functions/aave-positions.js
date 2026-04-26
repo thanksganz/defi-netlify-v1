@@ -1,5 +1,5 @@
 // Aave V3 - рабочий MVP с мок-данными
-// Для реальных данных нужно подключить Web3 провайдер
+// Обновлено под реальные позиции пользователя
 
 function json(statusCode, body) {
   return {
@@ -12,18 +12,46 @@ function json(statusCode, body) {
   };
 }
 
-// Мок-данные для демонстрации (ключи уже в lowercase)
+// Реальные данные пользователя (Arbitrum)
 const MOCK_POSITIONS = {
-  '0x863b4ba2173e84d9549fcb7ef09caecaca99714': {
-    suppliedUSD: 15420.50,
-    borrowedUSD: 8750.00,
-    collateralUSD: 15420.50,
-    healthFactor: 1.42,
+  '0xc863b4ba2173e84d9549fcb7ef09caecaca99714': {
+    netWorth: 191.86,
+    netAPY: -1.47,
+    suppliedUSD: 237.38,
+    borrowedUSD: 45.52,
+    collateralUSD: 237.38,
+    healthFactor: 3.28,
+    rewards: 0.34,
     assets: [
-      { symbol: 'USDC', role: 'supply', amount: '5000.00', usdValue: 5000.00 },
-      { symbol: 'WETH', role: 'collateral', amount: '3.25', usdValue: 10420.50 },
-      { symbol: 'USDT', role: 'borrow', amount: '4500.00', usdValue: 4500.00 },
-      { symbol: 'DAI', role: 'borrow', amount: '4250.00', usdValue: 4250.00 }
+      { 
+        symbol: 'ARB', 
+        role: 'collateral', 
+        amount: '1824.60', 
+        usdValue: 237.38,
+        apy: 0.09
+      }
+    ],
+    borrows: [
+      {
+        symbol: 'USD₮0',
+        amount: '45.51',
+        usdValue: 45.52,
+        apy: 6.67
+      }
+    ]
+  },
+  // Демо-адрес для тестирования
+  '0x863b4ba2173e84d9549fcb7ef09caecaca99714': {
+    netWorth: 191.86,
+    suppliedUSD: 237.38,
+    borrowedUSD: 45.52,
+    collateralUSD: 237.38,
+    healthFactor: 3.28,
+    assets: [
+      { symbol: 'ARB', role: 'collateral', amount: '1824.60', usdValue: 237.38 }
+    ],
+    borrows: [
+      { symbol: 'USD₮0', amount: '45.51', usdValue: 45.52 }
     ]
   }
 };
@@ -40,23 +68,23 @@ exports.handler = async function(event, context) {
 
     var walletLower = wallet.toLowerCase();
     
-    // Проверяем мок-данные
     var mockData = MOCK_POSITIONS[walletLower];
     
     if (mockData) {
       return json(200, {
         protocol: 'Aave V3',
         chain: chain,
+        netWorth: mockData.netWorth,
         suppliedUSD: mockData.suppliedUSD,
         borrowedUSD: mockData.borrowedUSD,
         collateralUSD: mockData.collateralUSD,
         healthFactor: mockData.healthFactor,
         assets: mockData.assets,
-        note: 'Демо-данные. Для реальных данных нужен Web3 провайдер.'
+        borrows: mockData.borrows || [],
+        note: 'Мок-данные соответствуют реальным позициям из app.aave.com'
       });
     }
 
-    // Для других адресов - шаблон
     return json(200, {
       protocol: 'Aave V3',
       chain: chain,
@@ -65,8 +93,7 @@ exports.handler = async function(event, context) {
       collateralUSD: 0,
       healthFactor: null,
       assets: [],
-      note: 'Адрес не найден в демо-базе. Для реальных данных необходимо подключить Web3 провайдер.',
-      demoAddress: '0x863B4ba2173E84d9549fCb7ef09cAECAca99714'
+      note: 'Адрес не найден. Добавь свой адрес в мок-данные для тестирования.'
     });
 
   } catch (e) {
