@@ -1,0 +1,8 @@
+{
+  "name": "defi-netlify-v1",
+  "version": "1.0.0",
+  "description": "DeFi Portfolio Tracker",
+  "scripts": {
+    "dev": "netlify dev"
+  }
+}
