@@ -1,5 +1,11 @@
-// Aave V3 - рабочая версия с кэшем + попытка реального запроса
-const ALCHEMY_URL = 'https://arb-mainnet.g.alchemy.com/v2/ksyAQZ9F6Th6bIhUspYkKn-CeIUqyXcu';
+// Aave V3 + все DeFi позиции через DeBank API
+// DeBank автоматически агрегирует позиции со всех протоколов
+
+const DEBANK_API = 'https://pro-openapi.debank.com/v1';
+
+// Получить API ключ: https://debank.com/pro
+// Бесплатный тариф: 1000 запросов/день
+const DEBANK_API_KEY = process.env.DEBANK_API_KEY || '';
 
 function json(statusCode, body) {
   return {
@@ -12,24 +18,23 @@ function json(statusCode, body) {
   };
 }
 
-// Реальные данные пользователей (обновляются вручную или через скрипт)
-const USER_CACHE = {
-  '0xc863b4ba2173e84d9549fcb7ef09caecaca99714': {
-    netWorth: 191.86,
-    suppliedUSD: 237.38,
-    borrowedUSD: 45.52,
-    collateralUSD: 237.38,
-    healthFactor: 3.28,
-    rewards: 0.34,
-    assets: [
-      { symbol: 'ARB', role: 'collateral', amount: '1824.60', usdValue: 237.38, apy: 0.09 }
-    ],
-    borrows: [
-      { symbol: 'USD₮0', amount: '45.51', usdValue: 45.52, apy: 6.67 }
-    ],
-    lastUpdated: '2026-04-26T13:30:00Z'
+async function fetchDeBank(endpoint) {
+  const headers = {
+    'Accept': 'application/json'
+  };
+  
+  if (DEBANK_API_KEY) {
+    headers['AccessKey'] = DEBANK_API_KEY;
   }
-};
+  
+  const response = await fetch(`${DEBANK_API}${endpoint}`, { headers });
+  
+  if (!response.ok) {
+    throw new Error(`DeBank API error: ${response.status}`);
+  }
+  
+  return response.json();
+}
 
 exports.handler = async function(event, context) {
   try {
@@ -41,73 +46,127 @@ exports.handler = async function(event, context) {
       return json(400, { error: 'Нужен EVM-адрес 0x...' });
     }
 
-    const walletLower = wallet.toLowerCase();
+    // Получаем список токенов с балансами
+    const tokenList = await fetchDeBank(`/user/token_list?id=${wallet}&chain_id=arb`);
     
-    // Проверяем кэш
-    const cached = USER_CACHE[walletLower];
+    // Получаем сложные позиции (lending, pools)
+    const protocolList = await fetchDeBank(`/user/protocol_list?id=${wallet}&chain_id=arb`);
     
+    // Ищем Aave V3
+    const aaveProtocol = protocolList.find(p => 
+      p.id === 'aave3' || p.name?.toLowerCase().includes('aave')
+    );
+    
+    if (!aaveProtocol) {
+      return json(200, {
+        protocol: 'Aave V3',
+        chain: chain,
+        netWorth: 0,
+        suppliedUSD: 0,
+        borrowedUSD: 0,
+        healthFactor: null,
+        assets: [],
+        borrows: [],
+        note: 'Позиции в Aave V3 не найдены через DeBank',
+        allProtocols: protocolList.map(p => ({ id: p.id, name: p.name, netUSD: p.portfolio_item_list?.reduce((a, b) => a + (b.stats?.net_usd_value || 0), 0) }))
+      });
+    }
+
+    // Парсим данные Aave
+    const supplied = [];
+    const borrowed = [];
+    let suppliedUSD = 0;
+    let borrowedUSD = 0;
+
+    for (const item of aaveProtocol.portfolio_item_list || []) {
+      // Supply positions
+      if (item.supply_token_list) {
+        for (const token of item.supply_token_list) {
+          const amount = Number(token.amount || 0);
+          const price = Number(token.price || 0);
+          const usdValue = amount * price;
+          
+          if (usdValue > 0.01) {
+            suppliedUSD += usdValue;
+            supplied.push({
+              symbol: token.symbol,
+              role: token.is_collateral ? 'collateral' : 'supply',
+              amount: amount.toFixed(4),
+              usdValue: usdValue
+            });
+          }
+        }
+      }
+      
+      // Borrow positions
+      if (item.borrow_token_list) {
+        for (const token of item.borrow_token_list) {
+          const amount = Number(token.amount || 0);
+          const price = Number(token.price || 0);
+          const usdValue = amount * price;
+          
+          if (usdValue > 0.01) {
+            borrowedUSD += usdValue;
+            borrowed.push({
+              symbol: token.symbol,
+              amount: amount.toFixed(4),
+              usdValue: usdValue
+            });
+          }
+        }
+      }
+    }
+
+    const netWorth = suppliedUSD - borrowedUSD;
+    
+    // Health Factor из DeBank
+    const healthFactor = aaveProtocol.portfolio_item_list?.[0]?.stats?.health_rate || null;
+
+    return json(200, {
+      protocol: 'Aave V3',
+      chain: chain,
+      wallet: wallet,
+      netWorth: netWorth.toFixed(2),
+      suppliedUSD: suppliedUSD.toFixed(2),
+      borrowedUSD: borrowedUSD.toFixed(2),
+      healthFactor: healthFactor,
+      assets: supplied,
+      borrows: borrowed,
+      source: 'DeBank API',
+      note: 'Реальные данные, автоматически обновляются',
+      lastUpdated: new Date().toISOString()
+    });
+
+  } catch (e) {
+    console.error('Error:', e);
+    
+    // Fallback к кэшу
+    const USER_CACHE = {
+      '0xc863b4ba2173e84d9549fcb7ef09caecaca99714': {
+        netWorth: 191.86,
+        suppliedUSD: 237.38,
+        borrowedUSD: 45.52,
+        healthFactor: 3.28,
+        assets: [{ symbol: 'ARB', role: 'collateral', amount: '1824.60', usdValue: 237.38 }],
+        borrows: [{ symbol: 'USD₮0', amount: '45.51', usdValue: 45.52 }]
+      }
+    };
+    
+    const cached = USER_CACHE[wallet.toLowerCase()];
     if (cached) {
       return json(200, {
         protocol: 'Aave V3',
         chain: chain,
         ...cached,
-        source: 'cache',
-        note: 'Данные из кэша. Для обновления: обновите USER_CACHE в коде функции.'
+        source: 'cache (fallback)',
+        note: 'Данные из кэша. Для автоматического обновления получите DeBank API ключ.',
+        error: e.message
       });
     }
-
-    // Пытаемся получить реальные данные через Alchemy
-    // В продакшене здесь должен быть полноценный Web3 вызов
-    try {
-      // Проверяем баланс нативного токена как индикатор активности
-      const balanceCheck = await fetch(ALCHEMY_URL, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          jsonrpc: '2.0',
-          id: 1,
-          method: 'eth_getBalance',
-          params: [wallet, 'latest']
-        })
-      });
-      
-      const balanceData = await balanceCheck.json();
-      
-      if (balanceData.result && balanceData.result !== '0x0') {
-        // Адрес активен, но позиции в Aave не найдены в кэше
-        return json(200, {
-          protocol: 'Aave V3',
-          chain: chain,
-          wallet: wallet,
-          netWorth: 0,
-          suppliedUSD: 0,
-          borrowedUSD: 0,
-          healthFactor: null,
-          assets: [],
-          borrows: [],
-          ethBalance: parseInt(balanceData.result, 16) / 1e18,
-          note: 'Адрес активен в сети, но позиции в Aave не найдены в кэше. Добавьте адрес в USER_CACHE.',
-          howToAdd: 'Отредактируйте netlify/functions/aave-positions.js и добавьте данные в USER_CACHE'
-        });
-      }
-    } catch (e) {
-      console.log('Alchemy check failed:', e.message);
-    }
-
-    return json(200, {
-      protocol: 'Aave V3',
-      chain: chain,
-      netWorth: 0,
-      suppliedUSD: 0,
-      borrowedUSD: 0,
-      healthFactor: null,
-      assets: [],
-      borrows: [],
-      note: 'Адрес не найден в кэше и не активен в сети.'
+    
+    return json(500, { 
+      error: e.message || 'Server error',
+      solution: 'Получите бесплатный API ключ на debank.com/pro и добавьте в DEBANK_API_KEY'
     });
-
-  } catch (e) {
-    console.error('Error:', e);
-    return json(500, { error: e.message || 'Server error' });
   }
 };
