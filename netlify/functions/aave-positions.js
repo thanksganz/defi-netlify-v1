@@ -2,10 +2,19 @@
 // DeBank автоматически агрегирует позиции со всех протоколов
 
 const DEBANK_API = 'https://pro-openapi.debank.com/v1';
-
-// Получить API ключ: https://debank.com/pro
-// Бесплатный тариф: 1000 запросов/день
 const DEBANK_API_KEY = process.env.DEBANK_API_KEY || '';
+
+// Кэш для fallback
+const USER_CACHE = {
+  '0xc863b4ba2173e84d9549fcb7ef09caecaca99714': {
+    netWorth: 191.86,
+    suppliedUSD: 237.38,
+    borrowedUSD: 45.52,
+    healthFactor: 3.28,
+    assets: [{ symbol: 'ARB', role: 'collateral', amount: '1824.60', usdValue: 237.38 }],
+    borrows: [{ symbol: 'USD₮0', amount: '45.51', usdValue: 45.52 }]
+  }
+};
 
 function json(statusCode, body) {
   return {
@@ -46,9 +55,6 @@ exports.handler = async function(event, context) {
       return json(400, { error: 'Нужен EVM-адрес 0x...' });
     }
 
-    // Получаем список токенов с балансами
-    const tokenList = await fetchDeBank(`/user/token_list?id=${wallet}&chain_id=arb`);
-    
     // Получаем сложные позиции (lending, pools)
     const protocolList = await fetchDeBank(`/user/protocol_list?id=${wallet}&chain_id=arb`);
     
@@ -68,7 +74,7 @@ exports.handler = async function(event, context) {
         assets: [],
         borrows: [],
         note: 'Позиции в Aave V3 не найдены через DeBank',
-        allProtocols: protocolList.map(p => ({ id: p.id, name: p.name, netUSD: p.portfolio_item_list?.reduce((a, b) => a + (b.stats?.net_usd_value || 0), 0) }))
+        allProtocols: protocolList.map(p => ({ id: p.id, name: p.name }))
       });
     }
 
@@ -118,8 +124,6 @@ exports.handler = async function(event, context) {
     }
 
     const netWorth = suppliedUSD - borrowedUSD;
-    
-    // Health Factor из DeBank
     const healthFactor = aaveProtocol.portfolio_item_list?.[0]?.stats?.health_rate || null;
 
     return json(200, {
@@ -141,18 +145,9 @@ exports.handler = async function(event, context) {
     console.error('Error:', e);
     
     // Fallback к кэшу
-    const USER_CACHE = {
-      '0xc863b4ba2173e84d9549fcb7ef09caecaca99714': {
-        netWorth: 191.86,
-        suppliedUSD: 237.38,
-        borrowedUSD: 45.52,
-        healthFactor: 3.28,
-        assets: [{ symbol: 'ARB', role: 'collateral', amount: '1824.60', usdValue: 237.38 }],
-        borrows: [{ symbol: 'USD₮0', amount: '45.51', usdValue: 45.52 }]
-      }
-    };
+    const walletLower = body.wallet.toLowerCase();
+    const cached = USER_CACHE[walletLower];
     
-    const cached = USER_CACHE[wallet.toLowerCase()];
     if (cached) {
       return json(200, {
         protocol: 'Aave V3',
@@ -166,7 +161,7 @@ exports.handler = async function(event, context) {
     
     return json(500, { 
       error: e.message || 'Server error',
-      solution: 'Получите бесплатный API ключ на debank.com/pro и добавьте в DEBANK_API_KEY'
+      solution: 'Получите бесплатный API ключ на debank.com/pro'
     });
   }
 };
